@@ -38,7 +38,7 @@ The raw schema is loaded by `scripts/load_raw.py` and is never modified by dbt. 
 Requires Python 3 (developed with 3.13) and about 150 MB of free disk for the data and database.
 
 ```bash
-git clone https://github.com/<your-user>/energy-dbt.git
+git clone https://github.com/oussama9310/energy-dbt.git
 cd energy-dbt
 
 # 1. Python environment
