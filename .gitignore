@@ -2,7 +2,8 @@
 target/
 dbt_packages/
 logs/
-data/
+data/*
+!data/README.md
 *.duckdb
 *.duckdb.wal
 .DS_Store
