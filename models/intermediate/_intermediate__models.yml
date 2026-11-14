@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: int_load_hourly
+    description: >
+      Hourly national electricity consumption on a complete UTC time spine.
+      Grain: one row per UTC hour. Unique key: hour_utc.
+
+      Decision: RTE's source data has no readings for the hour 00:00-00:59 UTC
+      on each October clock-change day (the repeated 02:00-02:45 summer-time
+      hour), 14 days from 2012 to 2025. Staging mirrors the source and does not
+      hide this. Here we build a gap-free hourly spine, left join the observed
+      hourly mean (average of the :00 and :30 readings) and fill the missing
+      hours by linear interpolation between the neighbouring hours. Filled rows
+      are flagged with is_imputed = true so analyses can exclude or audit them.
+      The series starts at the first and ends at the last hour with data, so
+      nothing is ever extrapolated.
+    columns:
+      - name: hour_utc
+        description: Start of the hour, in UTC (timestamp without timezone). Unique key.
+        data_tests:
+          - unique
+          - not_null
+      - name: consumption_mw
+        description: >
+          Mean consumption over the hour in MW. Observed, or linearly
+          interpolated when is_imputed is true.
+        data_tests:
+          - not_null
+      - name: is_imputed
+        description: True when consumption_mw was interpolated because the source had no reading.
+        data_tests:
+          - not_null

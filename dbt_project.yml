@@ -1,0 +1,18 @@
+name: energy
+version: "1.0.0"
+config-version: 2
+profile: energy
+
+model-paths: ["models"]
+
+models:
+  energy:
+    staging:
+      +materialized: view   # cheap, always reflects raw; staging is just a clean "view" of the source
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+    marts:
+      +materialized: table   # marts are what people query: store the result, don't recompute each time
+      +schema: marts

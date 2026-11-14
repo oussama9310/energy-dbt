@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw tables loaded by hand with DuckDB. dbt never writes here.
+    schema: raw
+    tables:
+      - name: load
+        description: RTE eco2mix national consumption and production, 15-minute grid (actuals only at :00/:30).
+      - name: weather
+        description: Open-Meteo hourly temperature for Paris (GMT).

@@ -1,0 +1,18 @@
+version: 2
+
+models:
+  - name: stg_open_meteo__weather
+    description: >
+      Hourly air temperature at 2 m for Paris from Open-Meteo, as an explicit UTC
+      instant. One row per hour. The raw file is complete (no gaps) for
+      2022-01-01 00:00 to 2025-12-31 23:00 UTC.
+    columns:
+      - name: observed_at
+        description: Hour of the measurement in UTC (timestamp with timezone). Unique key.
+        data_tests:
+          - unique
+          - not_null
+      - name: temperature_c
+        description: Air temperature at 2 m above ground, in degrees Celsius.
+        data_tests:
+          - not_null

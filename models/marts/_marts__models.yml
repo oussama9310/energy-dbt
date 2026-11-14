@@ -1,0 +1,49 @@
+version: 2
+
+models:
+  - name: fct_energy_hourly
+    description: >
+      Hourly national electricity consumption joined with Paris temperature.
+      Grain: one row per UTC hour that has both consumption and temperature
+      (2022-01-01 to 2025-12-31). Unique key: hour_utc.
+      Built with an inner join, so load history before 2022 is excluded because
+      no weather exists for it. Rows with is_imputed = true have interpolated
+      consumption (the 14 October clock-change hours missing from the source).
+      Calendar columns use Paris local time; heating_degrees_c uses an 18 C base.
+    columns:
+      - name: hour_utc
+        description: Start of the hour in UTC (timestamp without timezone). Unique key.
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('int_load_hourly')
+                field: hour_utc
+      - name: consumption_mw
+        description: Mean consumption over the hour in MW (observed or interpolated).
+        data_tests: [not_null]
+      - name: is_imputed
+        description: True when consumption_mw was interpolated.
+        data_tests: [not_null]
+      - name: temperature_c
+        description: Air temperature at 2 m in degrees Celsius.
+        data_tests: [not_null]
+      - name: local_hour
+        description: Hour of day in Paris local time (0-23).
+        data_tests: [not_null]
+      - name: local_day_of_week
+        description: ISO day of week in Paris local time (1 = Monday ... 7 = Sunday).
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2, 3, 4, 5, 6, 7]
+      - name: local_month
+        description: Month number in Paris local time (1-12).
+        data_tests: [not_null]
+      - name: is_weekend
+        description: True on Saturday and Sunday (Paris local time).
+        data_tests: [not_null]
+      - name: heating_degrees_c
+        description: Degrees below 18 C (0 when warmer). A proxy for heating demand.
+        data_tests: [not_null]

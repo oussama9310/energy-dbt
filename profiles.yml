@@ -1,0 +1,7 @@
+energy:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: energy.duckdb
+      threads: 1   # DuckDB allows a single writer process; more threads gain nothing here

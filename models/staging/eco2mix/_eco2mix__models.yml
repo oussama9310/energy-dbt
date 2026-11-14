@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: stg_eco2mix__load
+    description: >
+      Cleaned eco2mix load data. One row per 15-minute slot. Consumption and
+      production are only populated at :00 and :30; other slots are null.
+    columns:
+      - name: observed_at
+        description: Instant of the measurement (timestamp with timezone). Unique key.
+        data_tests:
+          - unique      # catches the DST duplicates if the dedup ever breaks
+          - not_null
