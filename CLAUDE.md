@@ -6,3 +6,4 @@
 - After changes, suggest the checks I should run to verify the result (row counts, uniqueness, nulls).
 - Don't run commands that delete data without asking me first.
 - Never rely on type auto-detection: state the delimiter, null strings and sample size explicitly in every load.
+- Before every commit, show me the list of files being committed (git status and git diff --cached --stat), and flag any generated, cache, data or personal-path files.
