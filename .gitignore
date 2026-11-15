@@ -11,3 +11,4 @@ data/landing/
 *.duckdb.bak
 .DS_Store
 .user.yml
+__pycache__/
