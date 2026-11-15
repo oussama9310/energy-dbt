@@ -3,6 +3,7 @@
 Usage:
     python scripts/extract_weather.py --start 2022-01-01 --end 2025-12-31
     python scripts/extract_weather.py --start 2022-01-01 --end 2025-12-31 --out-dir other/folder
+    python scripts/extract_weather.py --start ... --end ... --latitude 48.853382 --longitude 2.355208
 
 This is EXTRACTION ONLY (the E of ELT): it saves the API answer exactly as received into a
 landing folder, plus a small metadata file. It does not clean anything and does not touch
@@ -152,6 +153,12 @@ def main() -> int:
     parser.add_argument("--start", required=True, help="first day, yyyy-mm-dd")
     parser.add_argument("--end", required=True, help="last day, yyyy-mm-dd")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="landing folder")
+    parser.add_argument("--latitude", type=float, default=LATITUDE, help=f"default {LATITUDE}")
+    parser.add_argument("--longitude", type=float, default=LONGITUDE, help=f"default {LONGITUDE}")
+    parser.add_argument(
+        "--cell-selection", choices=["land", "sea", "nearest"], default=FIXED_PARAMS["cell_selection"],
+        help="how the API picks the grid cell (docs: default 'land')",
+    )
     args = parser.parse_args()
 
     try:
@@ -159,7 +166,14 @@ def main() -> int:
         if start > end:
             raise ExtractionError(f"--start {start} is after --end {end}")
 
-        params = {**FIXED_PARAMS, "start_date": start.isoformat(), "end_date": end.isoformat()}
+        params = {
+            **FIXED_PARAMS,
+            "latitude": args.latitude,
+            "longitude": args.longitude,
+            "cell_selection": args.cell_selection,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+        }
         pulled_at = datetime.now(timezone.utc)
         response, url = fetch(params)
         body = response.content  # the exact bytes received; we never re-serialise them
@@ -169,8 +183,10 @@ def main() -> int:
         expected_rows = ((end - start).days + 1) * 24
         null_count = sum(1 for v in temps if v is None)
 
+        # The name says what was asked for (location, non-default cell selection, dates) and when.
+        cell = "" if args.cell_selection == FIXED_PARAMS["cell_selection"] else f"_cell-{args.cell_selection}"
         stem = (
-            f"open-meteo_archive_{LATITUDE}N_{LONGITUDE}E_{start:%Y%m%d}_{end:%Y%m%d}"
+            f"open-meteo_archive_{args.latitude}N_{args.longitude}E{cell}_{start:%Y%m%d}_{end:%Y%m%d}"
             f"_pulled-{pulled_at:%Y%m%dT%H%M%SZ}"
         )
         out_dir = Path(args.out_dir)
