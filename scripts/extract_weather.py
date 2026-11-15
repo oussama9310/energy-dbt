@@ -140,12 +140,23 @@ def validate(body: bytes) -> dict:
     return data
 
 
-def write_atomic(path: Path, content: bytes) -> None:
-    """Write to a temporary name, then rename. A crash mid-write can never leave a half file
-    that looks complete."""
-    tmp = path.with_name(path.name + ".tmp")
+def write_new_file(path: Path, content: bytes) -> None:
+    """Create `path` with `content`, but only if it does not exist yet.
+
+    Two protections in one:
+    - Exclusive create: os.link() fails if the destination exists, so a landing file can never be
+      overwritten, even by two runs racing each other (the check and the creation are one step).
+    - Atomic: the bytes are written under a temporary name first and only linked to the final
+      name when complete, so a crash mid-write cannot leave a half file that looks finished.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_bytes(content)
-    os.replace(tmp, path)
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        raise ExtractionError(f"Refusing to overwrite an existing pull: {path}") from None
+    finally:
+        tmp.unlink()
 
 
 def main() -> int:
@@ -187,19 +198,18 @@ def main() -> int:
         cell = "" if args.cell_selection == FIXED_PARAMS["cell_selection"] else f"_cell-{args.cell_selection}"
         stem = (
             f"open-meteo_archive_{args.latitude}N_{args.longitude}E{cell}_{start:%Y%m%d}_{end:%Y%m%d}"
-            f"_pulled-{pulled_at:%Y%m%dT%H%M%SZ}"
+            # %f = microseconds (6 digits): two runs a fraction of a second apart get different names.
+            f"_pulled-{pulled_at:%Y%m%dT%H%M%S%fZ}"
         )
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         data_path, meta_path = out_dir / f"{stem}.json", out_dir / f"{stem}.meta.json"
-        if data_path.exists() or meta_path.exists():
-            raise ExtractionError(f"Refusing to overwrite an existing pull: {data_path}")
 
         meta = {
             "script_version": SCRIPT_VERSION,
             "request_url": url,
             "request_params": params,
-            "pulled_at_utc": pulled_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pulled_at_utc": pulled_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "http_status": response.status_code,
             "response_content_type": response.headers.get("Content-Type"),
             "response_bytes": len(body),
@@ -227,8 +237,8 @@ def main() -> int:
             "attribution": ATTRIBUTION,
         }
         # Data file first, metadata last: a metadata file exists only for a complete pull.
-        write_atomic(data_path, body)
-        write_atomic(meta_path, (json.dumps(meta, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+        write_new_file(data_path, body)
+        write_new_file(meta_path, (json.dumps(meta, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
     except ExtractionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
