@@ -37,11 +37,13 @@ def fake_body(hours=48, **overrides) -> bytes:
     return json.dumps(body).encode()
 
 
-def run_script(out_dir, body=None, now=None, extra=()):
+def run_script(out_dir, body=None, now=None, extra=(), models=None):
     """Run main() with a faked API call. Returns (exit_code, stdout, stderr)."""
     response = SimpleNamespace(content=body or fake_body(), status_code=200,
                                headers={"Content-Type": "application/json"})
     argv = ["extract_weather.py", "--start", "2024-01-01", "--end", "2024-01-02", "--out-dir", str(out_dir)]
+    if models is not None:
+        argv += ["--models", models]
     for item in extra:
         argv += ["--extra-param", item]
     out, err = io.StringIO(), io.StringIO()
@@ -106,20 +108,58 @@ class ExtractWeatherTests(unittest.TestCase):
         self.assertIn("API reported an error: bad", err)
         self.assertEqual(self.data_files(), [])  # nothing is written on failure
 
-    def test_extra_param_is_sent_and_recorded(self):
-        self.assertEqual(run_script(self.out_dir, extra=["models=era5"])[0], 0)
+    def meta(self):
+        return json.loads(next(self.out_dir.glob("*.meta.json")).read_text())
+
+    def test_models_is_pinned_to_ecmwf_ifs_by_default_and_recorded(self):
+        self.assertEqual(run_script(self.out_dir)[0], 0)
+        meta = self.meta()
+        self.assertEqual(meta["request_params"]["models"], "ecmwf_ifs")
+        self.assertEqual(meta["weather_model"]["requested"], "ecmwf_ifs")
+        self.assertIn("_models-ecmwf_ifs_", self.data_files()[0].name)
+
+    def test_the_real_request_url_contains_the_pinned_model(self):
+        # Not mocking fetch(): only the network send is replaced, so the URL is built by the real code.
+        sent = []
+        fake = SimpleNamespace(content=fake_body(), status_code=200, headers={"Content-Type": "application/json"}, text="")
+
+        def fake_send(session, prepared, **kwargs):
+            sent.append(prepared.url)
+            return fake
+
+        argv = ["extract_weather.py", "--start", "2024-01-01", "--end", "2024-01-02", "--out-dir", str(self.out_dir)]
+        with mock.patch("requests.Session.send", fake_send), mock.patch.object(sys, "argv", argv), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(extract_weather.main(), 0)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("models=ecmwf_ifs", sent[0])
+        for pinned in ("timezone=GMT", "temperature_unit=celsius", "timeformat=iso8601", "cell_selection=land"):
+            self.assertIn(pinned, sent[0])
+        self.assertEqual(self.meta()["request_url"], sent[0])  # the recorded URL is the URL that was sent
+
+    def test_models_can_be_overridden_explicitly(self):
+        self.assertEqual(run_script(self.out_dir, models="era5")[0], 0)
+        self.assertEqual(self.meta()["request_params"]["models"], "era5")
         self.assertIn("_models-era5_", self.data_files()[0].name)
-        meta = json.loads(next(self.out_dir.glob("*.meta.json")).read_text())
-        self.assertEqual(meta["request_params"]["models"], "era5")
-        self.assertEqual(meta["extra_params"], {"models": "era5"})
-        self.assertEqual(meta["weather_model"]["requested"], "era5")
+
+    def test_extra_param_is_sent_and_recorded(self):
+        self.assertEqual(run_script(self.out_dir, extra=["wind_speed_unit=ms"])[0], 0)
+        self.assertIn("_wind_speed_unit-ms_", self.data_files()[0].name)
+        meta = self.meta()
+        self.assertEqual(meta["request_params"]["wind_speed_unit"], "ms")
+        self.assertEqual(meta["extra_params"], {"wind_speed_unit": "ms"})
 
     def test_extra_param_cannot_override_core_or_be_malformed(self):
-        for bad in ("latitude=1", "start_date=2000-01-01", "models", "mo dels=x", "models=a/b"):
+        for bad in ("latitude=1", "start_date=2000-01-01", "models=era5", "wind_speed_unit", "mo dels=x", "foo=a/b"):
             code, _, err = run_script(self.out_dir, extra=[bad])
             self.assertEqual(code, 1, bad)
             self.assertIn("--extra-param", err)
         self.assertEqual(self.data_files(), [])
+
+    def test_unsafe_models_value_is_rejected(self):
+        code, _, err = run_script(self.out_dir, models="era5/../x")
+        self.assertEqual(code, 1)
+        self.assertIn("--models", err)
 
     def test_empty_series_fails_loudly(self):
         code, _, err = run_script(self.out_dir, body=fake_body(hours=0))

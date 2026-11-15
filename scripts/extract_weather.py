@@ -4,15 +4,19 @@ Usage:
     python scripts/extract_weather.py --start 2022-01-01 --end 2025-12-31
     python scripts/extract_weather.py --start 2022-01-01 --end 2025-12-31 --out-dir other/folder
     python scripts/extract_weather.py --start ... --end ... --latitude 48.853382 --longitude 2.355208
-    python scripts/extract_weather.py --start ... --end ... --extra-param models=era5
+    python scripts/extract_weather.py --start ... --end ... --models era5      (default: ecmwf_ifs)
+    python scripts/extract_weather.py --start ... --end ... --extra-param wind_speed_unit=ms
+
+The weather model is PINNED to ecmwf_ifs in every request (see the comment on FIXED_PARAMS), and the
+exact request is recorded in the .meta.json next to the data.
 
 This is EXTRACTION ONLY (the E of ELT): it saves the API answer exactly as received into a
 landing folder, plus a small metadata file. It does not clean anything and does not touch
 the database. Loading into raw is a separate step.
 
 Each run writes a NEW pair of files and never overwrites an older pull:
-    open-meteo_archive_48.85N_2.36E_<start>_<end>_pulled-<UTC timestamp>.json       (raw bytes)
-    open-meteo_archive_48.85N_2.36E_<start>_<end>_pulled-<UTC timestamp>.meta.json   (metadata)
+    open-meteo_archive_<lat>N_<lon>E_models-<model>_<start>_<end>_pulled-<UTC timestamp>.json       (raw bytes)
+    open-meteo_archive_<lat>N_<lon>E_models-<model>_<start>_<end>_pulled-<UTC timestamp>.meta.json   (metadata)
 
 Exit status: 0 on success, 1 on any failure (message on stderr).
 """
@@ -28,18 +32,25 @@ from pathlib import Path
 
 import requests
 
-SCRIPT_VERSION = "1.0"
+SCRIPT_VERSION = "1.1"
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_OUT_DIR = REPO / "data" / "landing" / "weather"
 
 ENDPOINT = "https://archive-api.open-meteo.com/v1/archive"
 LATITUDE, LONGITUDE = 48.85, 2.36  # Paris; matches the manual file open-meteo-48.85N2.36E43m.csv
 
-# Rule 7 (CLAUDE.md): state every setting that influences the values, even when it equals
-# the API default, so a change of default on their side cannot silently change our data.
-# NOTE: the docs list no "models" parameter, so none is sent. The docs say the default
-# "Best match" "combines IFS HRES, ERA5 and ERA5-Land seamlessly", and the response does not
-# say which model produced the values (recorded in the metadata as not reported).
+# CLAUDE.md rules 7 and 9: state every setting that influences the values, even when it equals
+# the provider's default, so a change of default on their side cannot silently change our data.
+#
+# models=ecmwf_ifs is pinned on purpose. Without it the API uses "Best match", which the docs say
+# "combines IFS HRES, ERA5 and ERA5-Land seamlessly" and may change over time. We checked
+# (2026-11-15, Paris, 2022-2025): the default pull and models=ecmwf_ifs were identical in all
+# 35,064 hours, so pinning changes nothing today and protects us from a future change.
+# RISKS: (1) "models" is NOT listed on the Open-Meteo archive docs page (we know it only from
+# third-party client code and from testing: era5, era5_land and ecmwf_ifs were all accepted and gave
+# different data). If it is ever rejected, the script fails loudly with the API's error text.
+# (2) The docs say ECMWF IFS history starts in 2017, so this source cannot go back further.
+# The response does not say which model produced the values; the request is the only record.
 FIXED_PARAMS = {
     "latitude": LATITUDE,
     "longitude": LONGITUDE,
@@ -48,6 +59,7 @@ FIXED_PARAMS = {
     "temperature_unit": "celsius",
     "timeformat": "iso8601",
     "cell_selection": "land",
+    "models": "ecmwf_ifs",
 }
 
 # Network behaviour. A timeout stops a stalled server from hanging the script forever.
@@ -190,9 +202,14 @@ def main() -> int:
         help="how the API picks the grid cell (docs: default 'land')",
     )
     parser.add_argument(
+        "--models", default=FIXED_PARAMS["models"],
+        help="weather model sent to the API (undocumented on the docs page; tested values: "
+             f"ecmwf_ifs, era5, era5_land). Default: {FIXED_PARAMS['models']}",
+    )
+    parser.add_argument(
         "--extra-param", action="append", default=[], metavar="KEY=VALUE",
-        help="additional API query parameter, repeatable (e.g. models=era5). Cannot override the "
-             "core parameters. Recorded in the filename and the metadata.",
+        help="additional API query parameter, repeatable (e.g. wind_speed_unit=ms). Cannot override "
+             "the core parameters (use their own option). Recorded in the filename and the metadata.",
     )
     args = parser.parse_args()
 
@@ -200,12 +217,15 @@ def main() -> int:
         start, end = parse_date(args.start), parse_date(args.end)
         if start > end:
             raise ExtractionError(f"--start {start} is after --end {end}")
+        if not SAFE_TEXT_RE.match(args.models):
+            raise ExtractionError(f"--models must use letters, digits, . _ - only, got {args.models!r}")
 
         params = {
             **FIXED_PARAMS,
             "latitude": args.latitude,
             "longitude": args.longitude,
             "cell_selection": args.cell_selection,
+            "models": args.models,
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
         }
@@ -224,7 +244,8 @@ def main() -> int:
         cell = "" if args.cell_selection == FIXED_PARAMS["cell_selection"] else f"_cell-{args.cell_selection}"
         extras = "".join(f"_{key}-{value}" for key, value in extra.items())
         stem = (
-            f"open-meteo_archive_{args.latitude}N_{args.longitude}E{cell}{extras}_{start:%Y%m%d}_{end:%Y%m%d}"
+            f"open-meteo_archive_{args.latitude}N_{args.longitude}E{cell}_models-{args.models}{extras}"
+            f"_{start:%Y%m%d}_{end:%Y%m%d}"
             # %f = microseconds (6 digits): two runs a fraction of a second apart get different names.
             f"_pulled-{pulled_at:%Y%m%dT%H%M%S%fZ}"
         )
@@ -255,25 +276,18 @@ def main() -> int:
                 "timezone_abbreviation": data.get("timezone_abbreviation"),
             },
             "weather_model": {
+                "requested": args.models,
+                "pinned_default": FIXED_PARAMS["models"],
                 "reported_by_api": None,
-                "docs_say_default_is": "Best match (combines IFS HRES, ERA5 and ERA5-Land)",
-                "note": "The response has no model field and the docs list no 'models' query "
-                        "parameter, so no model was requested explicitly.",
+                "note": "The response has no model field, so the request above is the only record of "
+                        "which model was asked for. 'models' is not documented on the Open-Meteo "
+                        "archive docs page (see the comment on FIXED_PARAMS in scripts/extract_weather.py).",
             },
             "landing_file": data_path.name,
             "attribution": ATTRIBUTION,
         }
         if extra:
             meta["extra_params"] = extra
-        if "models" in extra:
-            meta["weather_model"] = {
-                "requested": extra["models"],
-                "reported_by_api": None,
-                "note": "Requested through an extra 'models' query parameter. It is NOT documented on "
-                        "the Open-Meteo archive docs page (only seen in third-party client code), so "
-                        "check that the values differ from a pull without it: an unknown parameter "
-                        "could be silently ignored.",
-            }
         # Data file first, metadata last: a metadata file exists only for a complete pull.
         write_new_file(data_path, body)
         write_new_file(meta_path, (json.dumps(meta, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
