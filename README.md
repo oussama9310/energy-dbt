@@ -68,6 +68,12 @@ DuckDB lets only one process open `energy.duckdb` at a time. If a command fails 
 
 `dbt build` runs 27 checks: `unique` and `not_null` on every key, `relationships` and `accepted_values` where relevant, and three custom tests in `tests/` (no missing hours in the weather staging model, no missing hours in `int_load_hourly`, and mart row count equals weather row count).
 
+## Data sources, licences and attribution
+
+- **Weather data by [Open-Meteo.com](https://open-meteo.com/)**, licensed under [Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/). Changes made to the data: timestamps are interpreted as UTC, columns are renamed, and values are joined with electricity consumption (see "Data decisions"); the temperatures themselves are not altered. Open-Meteo builds on Copernicus reanalysis data: "Generated using Copernicus Climate Change Service information 2022." Suggested citation: Zippenfenig, P. (2023). Open-Meteo.com Weather API [Computer software]. Zenodo. https://doi.org/10.5281/ZENODO.7970649
+- **The free Open-Meteo API is for non-commercial use only** (rate-limited, no uptime guarantee). Do not reuse this pipeline for paid or commercial work without checking Open-Meteo's current terms and licence page, which may require a paid plan.
+- **Electricity data: RTE eCO2mix.** I have not checked RTE's reuse licence; check it before reusing or redistributing the data.
+
 ## Known limitations and next steps
 
 Limitations:
