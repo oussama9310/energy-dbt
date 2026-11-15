@@ -33,6 +33,26 @@ The raw schema is loaded by `scripts/load_raw.py` and is never modified by dbt. 
 - **Inner join in the mart.** The weather only covers 2022-2025, so the mart keeps only hours present on both sides. The mart's purpose is to relate temperature to consumption, so rows without temperature are of no use there. A test checks the mart has exactly as many rows as the weather table.
 - **18 °C heating threshold.** `heating_degrees_c = max(18 - temperature, 0)`. 18 °C is a common convention for where heating starts, not something derived from this data. It is an assumption you can change in `models/marts/fct_energy_hourly.sql`.
 
+## Weather source: what fills `raw.weather`
+
+**`raw.weather` is currently filled from the manually downloaded Open-Meteo website CSV** (`data/open-meteo-48.85N2.36E43m.csv`, downloaded 2026-11-13, loaded by `scripts/load_raw.py`). Its header reports 48.853382 N, 2.355208 E, elevation 43 m, timezone GMT, hourly `temperature_2m`, 2022-01-01 to 2025-12-31. The exact request that produced it (in particular any weather-model setting) is **not known**.
+
+`scripts/extract_weather.py` pulls the same variable from the Open-Meteo archive API into `data/landing/weather/` (raw JSON plus a `.meta.json`; gitignored, so these pulls exist only on the machine that made them). Four pulls were made on 2026-11-15, all 2022-01-01 to 2025-12-31, 35,064 rows each, 0 nulls:
+
+| Requested lat / lon | `cell_selection` | API returned (lat, lon, elevation) | Differing rows vs `raw.weather` |
+|---|---|---|---|
+| 48.85 / 2.36 | `land` (default) | 48.822495, 2.2881355, 26 m | 26,615 |
+| 48.853382 / 2.355208 | `land` | 48.822495, 2.2881355, 33 m | 26,615 |
+| 48.853382 / 2.355208 | `nearest` | 48.822495, 2.2881355, 33 m | 33,907 |
+| 48.8534 / 2.3488 (website's API URL) | `land` | 48.822495, 2.2881355, 43 m | 26,615 |
+
+What we found:
+- The API pulls at the three `land` coordinates have **identical temperatures** (only the reported elevation differs), so the requested coordinates do not change the values.
+- None reproduces the manual CSV. In **2022 they agree on 87% of hours** (mean difference -0.05 °C), but in **2023-2025 only about 3%** match (mean difference about -0.8 °C, correlation still about 0.99). This looks like a time-dependent difference between the two data sources (for example a model blend), not a location difference. The cause is **not established**.
+- The API's default is "Best match", which the docs describe as combining IFS HRES, ERA5 and ERA5-Land; the response does not say which model produced the values.
+
+**Decision pending:** `raw.weather` and the mart are unchanged. Until the source is chosen, treat the correlation figures above as based on the manual CSV, and note the API alternative gives different temperatures from 2023 on.
+
 ## Setup from a fresh clone
 
 Requires Python 3 (developed with 3.13) and about 150 MB of free disk for the data and database.
