@@ -37,11 +37,13 @@ def fake_body(hours=48, **overrides) -> bytes:
     return json.dumps(body).encode()
 
 
-def run_script(out_dir, body=None, now=None):
+def run_script(out_dir, body=None, now=None, extra=()):
     """Run main() with a faked API call. Returns (exit_code, stdout, stderr)."""
     response = SimpleNamespace(content=body or fake_body(), status_code=200,
                                headers={"Content-Type": "application/json"})
     argv = ["extract_weather.py", "--start", "2024-01-01", "--end", "2024-01-02", "--out-dir", str(out_dir)]
+    for item in extra:
+        argv += ["--extra-param", item]
     out, err = io.StringIO(), io.StringIO()
     patches = [mock.patch.object(extract_weather, "fetch", return_value=(response, "https://fake/url")),
                mock.patch.object(sys, "argv", argv)]
@@ -103,6 +105,21 @@ class ExtractWeatherTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("API reported an error: bad", err)
         self.assertEqual(self.data_files(), [])  # nothing is written on failure
+
+    def test_extra_param_is_sent_and_recorded(self):
+        self.assertEqual(run_script(self.out_dir, extra=["models=era5"])[0], 0)
+        self.assertIn("_models-era5_", self.data_files()[0].name)
+        meta = json.loads(next(self.out_dir.glob("*.meta.json")).read_text())
+        self.assertEqual(meta["request_params"]["models"], "era5")
+        self.assertEqual(meta["extra_params"], {"models": "era5"})
+        self.assertEqual(meta["weather_model"]["requested"], "era5")
+
+    def test_extra_param_cannot_override_core_or_be_malformed(self):
+        for bad in ("latitude=1", "start_date=2000-01-01", "models", "mo dels=x", "models=a/b"):
+            code, _, err = run_script(self.out_dir, extra=[bad])
+            self.assertEqual(code, 1, bad)
+            self.assertIn("--extra-param", err)
+        self.assertEqual(self.data_files(), [])
 
     def test_empty_series_fails_loudly(self):
         code, _, err = run_script(self.out_dir, body=fake_body(hours=0))

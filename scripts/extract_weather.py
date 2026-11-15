@@ -4,6 +4,7 @@ Usage:
     python scripts/extract_weather.py --start 2022-01-01 --end 2025-12-31
     python scripts/extract_weather.py --start 2022-01-01 --end 2025-12-31 --out-dir other/folder
     python scripts/extract_weather.py --start ... --end ... --latitude 48.853382 --longitude 2.355208
+    python scripts/extract_weather.py --start ... --end ... --extra-param models=era5
 
 This is EXTRACTION ONLY (the E of ELT): it saves the API answer exactly as received into a
 landing folder, plus a small metadata file. It does not clean anything and does not touch
@@ -159,6 +160,24 @@ def write_new_file(path: Path, content: bytes) -> None:
         tmp.unlink()
 
 
+SAFE_TEXT_RE = re.compile(r"^[A-Za-z0-9._-]+$")  # these go into file names, so keep them boring
+
+
+def parse_extra_params(items: list[str], reserved: set[str]) -> dict:
+    """Turn ['models=era5'] into {'models': 'era5'}, refusing anything ambiguous or unsafe."""
+    extra = {}
+    for item in items:
+        key, sep, value = item.partition("=")
+        if not sep or not SAFE_TEXT_RE.match(key) or not SAFE_TEXT_RE.match(value):
+            raise ExtractionError(f"--extra-param must look like KEY=VALUE (letters, digits, . _ -), got {item!r}")
+        if key in reserved:
+            raise ExtractionError(f"--extra-param cannot override the core parameter {key!r}; use its own option")
+        if key in extra:
+            raise ExtractionError(f"--extra-param {key!r} given twice")
+        extra[key] = value
+    return extra
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--start", required=True, help="first day, yyyy-mm-dd")
@@ -169,6 +188,11 @@ def main() -> int:
     parser.add_argument(
         "--cell-selection", choices=["land", "sea", "nearest"], default=FIXED_PARAMS["cell_selection"],
         help="how the API picks the grid cell (docs: default 'land')",
+    )
+    parser.add_argument(
+        "--extra-param", action="append", default=[], metavar="KEY=VALUE",
+        help="additional API query parameter, repeatable (e.g. models=era5). Cannot override the "
+             "core parameters. Recorded in the filename and the metadata.",
     )
     args = parser.parse_args()
 
@@ -185,6 +209,8 @@ def main() -> int:
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
         }
+        extra = parse_extra_params(args.extra_param, reserved=set(params))
+        params.update(extra)
         pulled_at = datetime.now(timezone.utc)
         response, url = fetch(params)
         body = response.content  # the exact bytes received; we never re-serialise them
@@ -196,8 +222,9 @@ def main() -> int:
 
         # The name says what was asked for (location, non-default cell selection, dates) and when.
         cell = "" if args.cell_selection == FIXED_PARAMS["cell_selection"] else f"_cell-{args.cell_selection}"
+        extras = "".join(f"_{key}-{value}" for key, value in extra.items())
         stem = (
-            f"open-meteo_archive_{args.latitude}N_{args.longitude}E{cell}_{start:%Y%m%d}_{end:%Y%m%d}"
+            f"open-meteo_archive_{args.latitude}N_{args.longitude}E{cell}{extras}_{start:%Y%m%d}_{end:%Y%m%d}"
             # %f = microseconds (6 digits): two runs a fraction of a second apart get different names.
             f"_pulled-{pulled_at:%Y%m%dT%H%M%S%fZ}"
         )
@@ -236,6 +263,17 @@ def main() -> int:
             "landing_file": data_path.name,
             "attribution": ATTRIBUTION,
         }
+        if extra:
+            meta["extra_params"] = extra
+        if "models" in extra:
+            meta["weather_model"] = {
+                "requested": extra["models"],
+                "reported_by_api": None,
+                "note": "Requested through an extra 'models' query parameter. It is NOT documented on "
+                        "the Open-Meteo archive docs page (only seen in third-party client code), so "
+                        "check that the values differ from a pull without it: an unknown parameter "
+                        "could be silently ignored.",
+            }
         # Data file first, metadata last: a metadata file exists only for a complete pull.
         write_new_file(data_path, body)
         write_new_file(meta_path, (json.dumps(meta, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
