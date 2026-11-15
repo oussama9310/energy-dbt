@@ -46,12 +46,16 @@ The raw schema is loaded by `scripts/load_raw.py` and is never modified by dbt. 
 | 48.853382 / 2.355208 | `nearest` | 48.822495, 2.2881355, 33 m | 33,907 |
 | 48.8534 / 2.3488 (website's API URL) | `land` | 48.822495, 2.2881355, 43 m | 26,615 |
 
-What we found:
-- The API pulls at the three `land` coordinates have **identical temperatures** (only the reported elevation differs), so the requested coordinates do not change the values.
-- None reproduces the manual CSV. In **2022 they agree on 87% of hours** (mean difference -0.05 °C), but in **2023-2025 only about 3%** match (mean difference about -0.8 °C, correlation still about 0.99). This looks like a time-dependent difference between the two data sources (for example a model blend), not a location difference. The cause is **not established**.
-- The API's default is "Best match", which the docs describe as combining IFS HRES, ERA5 and ERA5-Land; the response does not say which model produced the values.
+> **The API output does NOT match the manual CSV, and why is still an open question.** 26,615 of 35,064 hours differ (76%). Nothing we tried reproduces the CSV, and we do not know which of the two is closer to the truth.
 
-**Decision pending:** `raw.weather` and the mart are unchanged. Until the source is chosen, treat the correlation figures above as based on the manual CSV, and note the API alternative gives different temperatures from 2023 on.
+What we found:
+- The API pulls at the three `land` coordinates have **identical temperatures** (only the reported elevation differs), so the requested coordinates do not change the values. `cell_selection=nearest` made the match worse (33,907 differing rows).
+- The mismatch depends on the year. In **2022 the two agree on 87% of hours** (mean difference -0.05 °C), but in **2023-2025 only about 3%** match (mean difference about -0.8 °C, correlation still about 0.99). This points to a time-dependent difference between how the two series were produced (for example a model blend), not to location or a time shift. That is a hypothesis: the cause is **not established**.
+- The API's default is "Best match", which the docs describe as combining IFS HRES, ERA5 and ERA5-Land; the response does not say which model produced the values.
+- **Not tested: a model-specific pull.** The docs page lists reanalysis models (ERA5, ERA5-Land, ECMWF IFS, ...) but documents no `models` query parameter or API identifiers for the archive endpoint, and the OpenAPI specification could not be fetched, so I could not confirm the parameter exists and did not guess at it. Copying the API URL from the website after selecting a model there would settle this.
+- The API rejects any request whose `end_date` is after today (HTTP 400, "out of allowed range from 1940-01-01 to <today>"), including ranges that are only partly in the future. It does not return truncated data or nulls.
+
+**Decision pending:** `raw.weather` and the mart are unchanged and still based on the manual CSV. The API alternative gives different temperatures, especially from 2023 on.
 
 ## Setup from a fresh clone
 
@@ -93,6 +97,8 @@ DuckDB lets only one process open `energy.duckdb` at a time. If a command fails 
 - **Weather data by [Open-Meteo.com](https://open-meteo.com/)**, licensed under [Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/). Changes made to the data: timestamps are interpreted as UTC, columns are renamed, and values are joined with electricity consumption (see "Data decisions"); the temperatures themselves are not altered. Open-Meteo builds on Copernicus reanalysis data: "Generated using Copernicus Climate Change Service information 2022." Suggested citation: Zippenfenig, P. (2023). Open-Meteo.com Weather API [Computer software]. Zenodo. https://doi.org/10.5281/ZENODO.7970649
 - **The free Open-Meteo API is for non-commercial use only** (rate-limited, no uptime guarantee). Do not reuse this pipeline for paid or commercial work without checking Open-Meteo's current terms and licence page, which may require a paid plan.
 - **Electricity data: RTE eCO2mix.** I have not checked RTE's reuse licence; check it before reusing or redistributing the data.
+
+The extraction script has offline Python tests (a fake API, no network): `python -m unittest discover -s tests_python -v`.
 
 ## Known limitations and next steps
 
