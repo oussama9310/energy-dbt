@@ -5,6 +5,7 @@ dbt_packages/
 logs/
 data/*
 !data/README.md
+data/landing/
 *.duckdb
 *.duckdb.wal
 *.duckdb.bak
