@@ -35,27 +35,57 @@ The raw schema is loaded by `scripts/load_raw.py` and is never modified by dbt. 
 
 ## Weather source: what fills `raw.weather`
 
-**`raw.weather` is currently filled from the manually downloaded Open-Meteo website CSV** (`data/open-meteo-48.85N2.36E43m.csv`, downloaded 2026-11-13, loaded by `scripts/load_raw.py`). Its header reports 48.853382 N, 2.355208 E, elevation 43 m, timezone GMT, hourly `temperature_2m`, 2022-01-01 to 2025-12-31. The exact request that produced it (in particular any weather-model setting) is **not known**.
+**Decision (2026-11-15): the temperature source of truth is the Open-Meteo archive API with `models=ecmwf_ifs` pinned, and the manually downloaded CSV is retired as a source.** `scripts/extract_weather.py` pulls it into `data/landing/weather/` (raw JSON plus a `.meta.json` with the exact request; gitignored, so these files exist only on the machine that made them).
 
-`scripts/extract_weather.py` pulls the same variable from the Open-Meteo archive API into `data/landing/weather/` (raw JSON plus a `.meta.json`; gitignored, so these pulls exist only on the machine that made them). Four pulls were made on 2026-11-15, all 2022-01-01 to 2025-12-31, 35,064 rows each, 0 nulls:
+**Current state:** `raw.weather` and the mart are **still built from the manual CSV** (`data/open-meteo-48.85N2.36E43m.csv`, downloaded 2026-11-13; header: 48.853382 N, 2.355208 E, 43 m, GMT). They will switch to the API data when the raw load (E1.2) reads the landing files, followed by a rebuild and a before/after comparison. Until then all numbers in this README come from the CSV.
 
-| Requested lat / lon | `cell_selection` | API returned (lat, lon, elevation) | Differing rows vs `raw.weather` |
-|---|---|---|---|
-| 48.85 / 2.36 | `land` (default) | 48.822495, 2.2881355, 26 m | 26,615 |
-| 48.853382 / 2.355208 | `land` | 48.822495, 2.2881355, 33 m | 26,615 |
-| 48.853382 / 2.355208 | `nearest` | 48.822495, 2.2881355, 33 m | 33,907 |
-| 48.8534 / 2.3488 (website's API URL) | `land` | 48.822495, 2.2881355, 43 m | 26,615 |
+> **The API output does NOT match the manual CSV, and the CSV's 2023-2025 difference remains unexplained.** No model we tried reproduces it. The CSV is retired because it cannot be reproduced (its exact request is unknown) and is not one consistent series, not because we proved it wrong.
 
-> **The API output does NOT match the manual CSV, and why is still an open question.** 26,615 of 35,064 hours differ (76%). Nothing we tried reproduces the CSV, and we do not know which of the two is closer to the truth.
+### What we compared
 
-What we found:
-- The API pulls at the three `land` coordinates have **identical temperatures** (only the reported elevation differs), so the requested coordinates do not change the values. `cell_selection=nearest` made the match worse (33,907 differing rows).
-- The mismatch depends on the year. In **2022 the two agree on 87% of hours** (mean difference -0.05 °C), but in **2023-2025 only about 3%** match (mean difference about -0.8 °C, correlation still about 0.99). This points to a time-dependent difference between how the two series were produced (for example a model blend), not to location or a time shift. That is a hypothesis: the cause is **not established**.
-- The API's default is "Best match", which the docs describe as combining IFS HRES, ERA5 and ERA5-Land; the response does not say which model produced the values.
-- **Not tested: a model-specific pull.** The docs page lists reanalysis models (ERA5, ERA5-Land, ECMWF IFS, ...) but documents no `models` query parameter or API identifiers for the archive endpoint, and the OpenAPI specification could not be fetched, so I could not confirm the parameter exists and did not guess at it. Copying the API URL from the website after selecting a model there would settle this.
-- The API rejects any request whose `end_date` is after today (HTTP 400, "out of allowed range from 1940-01-01 to <today>"), including ranges that are only partly in the future. It does not return truncated data or nulls.
+All pulls cover 2022-01-01 to 2025-12-31 (35,064 hours, 0 nulls) and were compared with `raw.weather` (the CSV) on 2026-11-15:
 
-**Decision pending:** `raw.weather` and the mart are unchanged and still based on the manual CSV. The API alternative gives different temperatures, especially from 2023 on.
+| API pull | Grid cell returned | Hours differing from CSV | 2022 | 2023-2025 | Mean diff (API - CSV) |
+|---|---|---|---|---|---|
+| default, no `models`, `cell_selection=land` (3 coordinate variants, identical values) | 48.8225, 2.2881 | 26,615 (75.9%) | 12.6% | 96.5-97.5% | -0.63 °C |
+| default, `cell_selection=nearest` | 48.8225, 2.2881 | 33,907 (96.7%) | not broken down | not broken down | -0.38 °C |
+| **`models=ecmwf_ifs`** | 48.8225, 2.2881 | 26,615 (75.9%) | 12.6% | 96.5-97.5% | -0.63 °C |
+| `models=era5` | 48.75, 2.25 | 33,191 (94.7%) | 95.2% | 92.7-96.5% | -0.31 °C |
+| `models=era5_land` | 48.90, 2.30 | 33,755 (96.3%) | 95.1% | 96.2-97.2% | -0.51 °C |
+
+What this shows:
+- **The default is `ecmwf_ifs`.** The default pull and `models=ecmwf_ifs` are identical in all 35,064 hours (0 differences). The three coordinate variants of the default also give identical values (only the reported elevation differs), so the exact coordinates do not matter; the API picks the same grid cell.
+- **The CSV matches IFS in 2022 only.** In 2022, 87.4% of hours are exactly equal (mean absolute difference 0.097 °C); from 2023, 96-97% of hours differ from every model, ERA5 and ERA5-Land included. So the CSV looks like one source in 2022 and something else afterwards. **We do not know what.**
+- `era5` and `era5_land` differ from the CSV in every year, including 2022.
+
+### Effect on the headline result (computed on a scratch copy, nothing rebuilt)
+
+| Temperature source | Correlation with temperature | Correlation with heating degrees |
+|---|---|---|
+| manual CSV (current) | -0.606 | 0.702 |
+| `ecmwf_ifs` (chosen) | -0.594 | 0.683 |
+| `era5_land` | -0.597 | 0.682 |
+| `era5` | -0.575 | 0.669 |
+
+The conclusion (consumption rises when it is cold) does not depend on the source; the figures move by about 0.01-0.03.
+
+### Why `ecmwf_ifs`
+- **Reproducible:** every pull records its exact URL, parameters, timestamp and checksum; the CSV's request is unknown.
+- **One consistent source** for all four years, unlike the CSV.
+- **Equals today's default**, so adopting it changes nothing now. Pinning it protects us if the default "Best match" blend changes later (the docs say it may).
+- **Finest grid of the three tested:** 9 km, against 11 km for ERA5-Land and 25 km for ERA5 (docs).
+- **Closer to what a production setup would use:** an operational model updated every 6 hours with no delay, where ERA5 and ERA5-Land are reanalyses published with a 5-day delay (docs).
+
+### Risks
+- **`models` is not listed on the Open-Meteo archive docs page.** We know it from third-party client code and from testing: `era5`, `era5_land` and `ecmwf_ifs` were all accepted and returned different data. If Open-Meteo changes or removes it, the script fails loudly with the API's error text instead of loading silently.
+- **IFS history starts in 2017** (docs), so this source cannot be used further back. Switch to ERA5 (documented, 1940 onwards) if the project ever needs an earlier or strictly homogeneous long-term series.
+- Operational models are upgraded over time, which can introduce small discontinuities.
+- The response does not say which model produced the values; the recorded request is the only evidence.
+- The free API is for non-commercial use only (see "Data sources, licences and attribution" below).
+
+### Script behaviour worth knowing
+- The earliest pulls (before pinning) did not send `models`, so their `.meta.json` does not name a model; their values equal `ecmwf_ifs` as shown above.
+- The API rejects any request whose `end_date` is after today (HTTP 400), including ranges only partly in the future. It never returns truncated data or nulls for them.
 
 ## Setup from a fresh clone
 
